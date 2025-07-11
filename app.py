@@ -94,6 +94,73 @@ class Neo4jConnection:
             result = session.run(query, parameters)
             return [record.data() for record in result]
 
+def create_entity(entity_type, properties):
+    """Crée un nouveau nœud avec les propriétés données"""
+    query = f"""
+    MERGE (n:{entity_type} {{id: $id}})
+    SET n += $properties
+    """
+    try:
+        params = {"id": properties.pop("id"), "properties": properties}
+        conn.execute_query(query, params)
+        st.success(f"{entity_type} {properties['nom']} créé avec succès!")
+    except Exception as e:
+        st.error(f"Erreur création {entity_type}: {str(e)}")
+
+def create_relationship(from_type, from_id, to_type, to_id, rel_type):
+    """Établit une relation entre deux nœuds"""
+    query = f"""
+    MATCH (a:{from_type} {{id: $from_id}}), (b:{to_type} {{id: $to_id}})
+    MERGE (a)-[r:{rel_type}]->(b)
+    RETURN type(r) as relation_type
+    """
+    try:
+        result = conn.execute_query(query, {"from_id": from_id, "to_id": to_id})
+        if result:
+            st.success(f"Relation {result[0]['relation_type']} créée!")
+        else:
+            st.warning("Un des nœuds n'existe pas")
+    except Exception as e:
+        st.error(f"Erreur création relation: {str(e)}")
+
+def process_csv_import(file):
+    """Traite un fichier CSV d'import"""
+    try:
+        df = pd.read_csv(file)
+        required_cols = {"type_entite", "id", "nom"}
+        
+        if not required_cols.issubset(df.columns):
+            st.error(f"Colonnes obligatoires manquantes. Requises: {', '.join(required_cols)}")
+            return
+            
+        for _, row in df.iterrows():
+            row_data = row.dropna().to_dict()
+            create_entity(row['type_entite'], row_data)
+            
+        st.success(f"Import réussi: {len(df)} entités ajoutées")
+    except Exception as e:
+        st.error(f"Erreur d'import: {str(e)}")
+
+def display_entities(entity_type):
+    """Affiche les entités existantes"""
+    query = f"MATCH (n:{entity_type}) RETURN n LIMIT 100"
+    result = conn.execute_query(query)
+    
+    if not result:
+        st.info(f"Aucun(e) {entity_type} trouvé(e)")
+        return
+        
+    data = []
+    for record in result:
+        node = record["n"]
+        data.append({
+            "id": node.get("id", ""),
+            "nom": node.get("nom", ""),
+            **{k: v for k, v in node.items() if k not in ["id", "nom"]}
+        })
+    
+    st.dataframe(pd.DataFrame(data), use_container_width=True)
+
 # Configuration de la connexion Neo4j (mise en cache pour éviter les reconnexions)
 @st.cache_resource
 def init_neo4j_connection():
@@ -133,6 +200,7 @@ page = st.sidebar.selectbox(
         "📦 Analyse Produits",
         "👤 Gestion Clients",
         "📊 Reporting Exécutif",
+        "📤 Importer Données",
         "🔧 Administration"
     ]
 )
@@ -180,27 +248,44 @@ if page == "🏠 Tableau de Bord":
     kpi_data = execute_safe_query(kpi_query, "KPIs")
     
     if kpi_data:
-        kpi = kpi_data[0]
-        
+        kpi = kpi_data[0] # kpi est un dictionnaire
+
         col1, col2, col3, col4 = st.columns(4)
-        
+
         with col1:
             st.metric("Total Commandes", kpi.get('total_commandes', 0))
             st.metric("Nombre Clients", kpi.get('nb_clients', 0))
-        
+
         with col2:
-            st.metric("CA Total", f"{kpi.get('ca_total', 0):,.2f} DH")
+            ca_total_value = kpi.get('ca_total')
+            if ca_total_value is None:
+                st.metric("CA Total", "N/A")
+            else:
+                st.metric("CA Total", f"{ca_total_value:,.2f} DH")
+
             st.metric("Nombre Livreurs", kpi.get('nb_livreurs', 0))
-        
+
         with col3:
-            st.metric("Panier Moyen", f"{kpi.get('panier_moyen', 0):,.2f} DH")
+            panier_moyen_value = kpi.get('panier_moyen')
+            if panier_moyen_value is None:
+                st.metric("Panier Moyen", "N/A")
+            else:
+                st.metric("Panier Moyen", f"{panier_moyen_value:,.2f} DH")
+
             st.metric("Nombre Zones", kpi.get('nb_zones', 0))
-        
+
         with col4:
-            st.metric("Poids Total", f"{kpi.get('poids_total', 0):,.2f} kg")
+            poids_total_value = kpi.get('poids_total')
+            if poids_total_value is None:
+                st.metric("Poids Total", "N/A")
+            else:
+                st.metric("Poids Total", f"{poids_total_value:,.2f} kg")
+
             st.metric("Nombre Entrepôts", kpi.get('nb_entrepots', 0))
     else:
-        st.info("Aucune donnée KPI disponible. La base de données est peut-être vide ou la requête a échoué.")
+        st.warning("Aucune donnée KPI disponible. Veuillez générer des données de test si ce n'est pas déjà fait.")
+
+
 
     st.markdown("---")
 
@@ -689,16 +774,15 @@ elif page == "👤 Gestion Clients":
 # ==============================================================================
 # SECTION : REPORTING EXÉCUTIF
 # ==============================================================================
+
 elif page == "📊 Reporting Exécutif":
-    st.header("📈 Reporting Exécutif Global")
+    st.header("📈 Reporting Exécutif")
 
-    st.markdown("---")
-
-    # KPIs globaux de l'agence (répétition pour le reporting)
-    st.subheader("📊 Indicateurs Clés de Performance (KPIs)")
-    kpi_query_report = """
+    # KPIs principaux pour le reporting
+    st.subheader("📊 Vue d'ensemble des Performances")
+    kpi_reporting_query = """
     MATCH (cmd:Commande)
-    WITH COUNT(cmd) as total_commandes, SUM(cmd.prix_total) as ca_total, 
+    WITH COUNT(cmd) as total_commandes, SUM(cmd.prix_total) as ca_total,
          AVG(cmd.prix_total) as panier_moyen, SUM(cmd.poids_total) as poids_total
     MATCH (l:Livreur)
     WITH total_commandes, ca_total, panier_moyen, poids_total, COUNT(l) as nb_livreurs
@@ -711,10 +795,10 @@ elif page == "📊 Reporting Exécutif":
     RETURN total_commandes, ca_total, panier_moyen, poids_total, nb_livreurs, nb_clients, nb_zones, nb_entrepots
     """
 
-    kpi_data_report = execute_safe_query(kpi_query_report, "KPIs Report")
+    kpi_reporting_data = execute_safe_query(kpi_reporting_query, "Reporting KPIs")
 
-    if kpi_data_report:
-        kpi_r = kpi_data_report[0]
+    if kpi_reporting_data:
+        kpi_r = kpi_reporting_data[0] # kpi_r est le dictionnaire de résultats
 
         col1, col2, col3, col4 = st.columns(4)
 
@@ -723,67 +807,188 @@ elif page == "📊 Reporting Exécutif":
             st.metric("Nombre Clients", kpi_r.get('nb_clients', 0))
 
         with col2:
-            st.metric("CA Total", f"{kpi_r.get('ca_total', 0):,.2f} DH")
+            ca_total_r_value = kpi_r.get('ca_total')
+            if ca_total_r_value is None:
+                st.metric("CA Total", "N/A")
+            else:
+                st.metric("CA Total", f"{ca_total_r_value:,.2f} DH")
+
             st.metric("Nombre Livreurs", kpi_r.get('nb_livreurs', 0))
 
         with col3:
-            st.metric("Panier Moyen", f"{kpi_r.get('panier_moyen', 0):,.2f} DH")
+            panier_moyen_r_value = kpi_r.get('panier_moyen')
+            if panier_moyen_r_value is None:
+                st.metric("Panier Moyen", "N/A")
+            else:
+                st.metric("Panier Moyen", f"{panier_moyen_r_value:,.2f} DH")
+
             st.metric("Nombre Zones", kpi_r.get('nb_zones', 0))
 
         with col4:
-            st.metric("Poids Total", f"{kpi_r.get('poids_total', 0):,.2f} kg")
+            poids_total_r_value = kpi_r.get('poids_total')
+            if poids_total_r_value is None:
+                st.metric("Poids Total", "N/A")
+            else:
+                st.metric("Poids Total", f"{poids_total_r_value:,.2f} kg")
+
             st.metric("Nombre Entrepôts", kpi_r.get('nb_entrepots', 0))
     else:
-        st.info("Aucune donnée KPI disponible pour le reporting.")
+        st.warning("Aucune donnée KPI disponible pour le reporting exécutif. Veuillez générer des données de test si ce n'est pas déjà fait.")
 
-    st.markdown("---")
-
-    # Performance par entrepôt
-    st.subheader("🏭 Performance par Entrepôt")
-
-    entrepot_perf_query = """
-    MATCH (e:Entrepôt)<-[s:STOCKED_IN]-(p:Produit)<-[c:CONTAINS]-(cmd:Commande)
-    WITH e, COUNT(DISTINCT cmd) as nb_commandes_expediees, SUM(c.quantite * p.prix) as ca_expedie,
-         SUM(c.quantite * p.poids) as poids_total_expedie
-    RETURN e.nom as Entrepôt, nb_commandes_expediees as Commandes_Expédiées,
-           ROUND(ca_expedie, 2) as CA_Expédié, ROUND(poids_total_expedie, 2) as Poids_Expédié_kg
-    ORDER BY CA_Expédié DESC
-    """
-
-    entrepot_perf_data = execute_safe_query(entrepot_perf_query, "Performance Entrepôts")
-    if entrepot_perf_data:
-        df_entrepot_perf = pd.DataFrame(entrepot_perf_data)
-        st.dataframe(df_entrepot_perf, use_container_width=True)
-
-        fig_entrepot_bar = px.bar(df_entrepot_perf, x='Entrepôt', y='CA_Expédié',
-                                  color='Commandes_Expédiées',
-                                  title="Chiffre d'Affaires Expédié par Entrepôt",
-                                  labels={'Entrepôt': 'Entrepôt', 'CA_Expédié': 'CA Expédié (DH)', 'Commandes_Expédiées': 'Commandes Expédiées'})
-        st.plotly_chart(fig_entrepot_bar, use_container_width=True)
-    else:
-        st.info("Aucune donnée de performance d'entrepôt disponible.")
-
-    st.markdown("---")
-
-    # Tendances logistiques (évolution des statuts de commande)
-    st.subheader("📊 Tendances Logistiques : Évolution des Statuts de Commande")
-
-    tendances_statut_query = """
+    # Graphiques de tendance des commandes et CA
+    st.subheader("📈 Tendance des Commandes et du Chiffre d'Affaires")
+    reporting_evolution_query = """
     MATCH (cmd:Commande)
-    RETURN cmd.date_commande as date, cmd.statut as statut, COUNT(cmd) as nb_commandes
-    ORDER BY date, statut
+    WITH cmd.date_commande as date, COUNT(cmd) as nb_commandes,
+         SUM(cmd.prix_total) as ca_jour
+    RETURN date, nb_commandes, ca_jour
+    ORDER BY date
     """
+    reporting_evolution_data = execute_safe_query(reporting_evolution_query, "Reporting Évolution")
 
-    tendances_statut_data = execute_safe_query(tendances_statut_query, "Tendances Statut")
-    if tendances_statut_data:
-        df_tendances_statut = pd.DataFrame(tendances_statut_data)
-        df_tendances_statut['date'] = pd.to_datetime(df_tendances_statut['date']) # Convertir en datetime
-        fig_tendances_statut = px.line(df_tendances_statut, x='date', y='nb_commandes', color='statut',
-                                       title="Évolution du Nombre de Commandes par Statut",
-                                       labels={'date': 'Date', 'nb_commandes': 'Nombre de Commandes', 'statut': 'Statut'})
-        st.plotly_chart(fig_tendances_statut, use_container_width=True)
+    if reporting_evolution_data:
+        df_reporting_evolution = pd.DataFrame(reporting_evolution_data)
+        df_reporting_evolution['date'] = pd.to_datetime(df_reporting_evolution['date']) # Convertir en datetime
+
+        fig_reporting_evolution = make_subplots(specs=[[{"secondary_y": True}]])
+
+        fig_reporting_evolution.add_trace(
+            go.Scatter(x=df_reporting_evolution['date'], y=df_reporting_evolution['nb_commandes'], name="Nombre de Commandes"),
+            secondary_y=False,
+        )
+
+        fig_reporting_evolution.add_trace(
+            go.Scatter(x=df_reporting_evolution['date'], y=df_reporting_evolution['ca_jour'], name="Chiffre d'Affaires (DH)"),
+            secondary_y=True,
+        )
+
+        fig_reporting_evolution.update_layout(title_text="Évolution Quotidienne des Commandes et du Chiffre d'Affaires")
+        fig_reporting_evolution.update_xaxes(title_text="Date")
+        fig_reporting_evolution.update_yaxes(title_text="Nombre de Commandes", secondary_y=False)
+        fig_reporting_evolution.update_yaxes(title_text="Chiffre d'Affaires (DH)", secondary_y=True)
+
+        st.plotly_chart(fig_reporting_evolution, use_container_width=True)
     else:
-        st.info("Aucune donnée de tendance de statut disponible.")
+        st.info("Pas de données d'évolution des commandes disponibles pour le reporting.")
+
+    # Répartition des commandes par statut
+    st.subheader("📋 Répartition des Commandes par Statut")
+    reporting_statut_query = """
+    MATCH (cmd:Commande)
+    WITH cmd.statut as statut, COUNT(cmd) as nb_commandes,
+         SUM(cmd.prix_total) as ca_statut
+    RETURN statut, nb_commandes, ca_statut
+    ORDER BY nb_commandes DESC
+    """
+    reporting_statut_data = execute_safe_query(reporting_statut_query, "Reporting Statut")
+
+    if reporting_statut_data:
+        df_reporting_statut = pd.DataFrame(reporting_statut_data)
+
+        col1, col2 = st.columns(2)
+        with col1:
+            fig_pie_statut = px.pie(df_reporting_statut, values='nb_commandes', names='statut',
+                                    title="Répartition des Commandes par Statut")
+            st.plotly_chart(fig_pie_statut, use_container_width=True)
+
+        with col2:
+            fig_bar_ca_statut = px.bar(df_reporting_statut, x='statut', y='ca_statut',
+                                       title="Chiffre d'Affaires par Statut de Commande")
+            st.plotly_chart(fig_bar_ca_statut, use_container_width=True)
+    else:
+        st.info("Pas de données de statut de commande disponibles pour le reporting.")
+
+    # Top 5 des livreurs par CA généré
+    st.subheader("🏆 Top 5 Livreurs par CA Généré")
+    reporting_top_livreurs_query = """
+    MATCH (l:Livreur)-[:DELIVERS]->(cmd:Commande)
+    RETURN l.nom as Livreur, SUM(cmd.prix_total) as CA_Généré
+    ORDER BY CA_Généré DESC
+    LIMIT 5
+    """
+    reporting_top_livreurs_data = execute_safe_query(reporting_top_livreurs_query, "Reporting Top Livreurs")
+
+    if reporting_top_livreurs_data:
+        df_reporting_top_livreurs = pd.DataFrame(reporting_top_livreurs_data)
+        fig_top_livreurs = px.bar(df_reporting_top_livreurs, x='Livreur', y='CA_Généré',
+                                  title="Top 5 Livreurs par Chiffre d'Affaires Généré")
+        st.plotly_chart(fig_top_livreurs, use_container_width=True)
+    else:
+        st.info("Pas de données de top livreurs disponibles pour le reporting.")
+
+
+# ==================== IMPORT DE DONNEES ==================== 
+elif page == "📤 Importer Données":
+    st.header("🛠️ Interface d'Import Métier")
+    
+    # Section 1: Ajout manuel
+    with st.expander("➕ Ajout Manuel", expanded=True):
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            with st.form("Nouvelle Entité"):
+                st.subheader("Créer une Entité")
+                entity_type = st.selectbox("Type d'entité", 
+                    ["Client", "Produit", "Livreur", "Entrepôt", "Zone"])
+                
+                entity_id = st.text_input("ID Unique*")
+                entity_name = st.text_input("Nom*")
+                
+                # Champs spécifiques par type
+                if entity_type == "Client":
+                    client_type = st.selectbox("Type Client", ["Particulier", "Entreprise"])
+                elif entity_type == "Produit":
+                    product_cat = st.text_input("Catégorie*")
+                    product_price = st.number_input("Prix*", min_value=0.0)
+                    product_weight = st.number_input("Poids (kg)", min_value=0.0)
+                
+                if st.form_submit_button(f"Créer {entity_type}"):
+                    if not entity_id or not entity_name:
+                        st.warning("Les champs obligatoires (*) doivent être remplis")
+                    else:
+                        create_entity(entity_type, {
+                            "id": entity_id,
+                            "nom": entity_name,
+                            **({"type": client_type} if entity_type == "Client" else {}),
+                            **({"categorie": product_cat, "prix": product_price, 
+                               "poids": product_weight} if entity_type == "Produit" else {})
+                        })
+
+        with col2:
+            with st.form("Nouvelle Relation"):
+                st.subheader("Créer une Relation")
+                rel_types = ["LOCATED_IN", "STOCKED_IN", "DELIVERS", "ORDERED", "ASSIGNED_TO"]
+                rel_type = st.selectbox("Type de relation*", rel_types)
+                
+                st.markdown("**Nœud Source**")
+                from_type = st.selectbox("Type source", ["Client", "Produit", "Livreur"])
+                from_id = st.text_input("ID source*")
+                
+                st.markdown("**Nœud Cible**")
+                to_type = st.selectbox("Type cible", ["Zone", "Entrepôt", "Commande"])
+                to_id = st.text_input("ID cible*")
+                
+                if st.form_submit_button("Établir Relation"):
+                    if not from_id or not to_id:
+                        st.warning("IDs source et cible obligatoires")
+                    else:
+                        create_relationship(from_type, from_id, to_type, to_id, rel_type)
+    
+    # Section 2: Import CSV
+    with st.expander("📁 Import par Fichier CSV", expanded=True):
+        st.info("Format requis: Fichier CSV avec colonnes correspondant aux propriétés des nœuds")
+        uploaded_file = st.file_uploader("Choissisez un fichier CSV", type="csv")
+        
+        if uploaded_file:
+            if st.button("Lancer l'Import"):
+                process_csv_import(uploaded_file)
+
+    # Section 3: Prévisualisation données existantes
+    with st.expander("🔍 Vérifier les Données Existant"):
+        entity_to_check = st.selectbox("Voir tous les", 
+            ["Clients", "Produits", "Livreurs", "Commandes"])
+        if st.button("Afficher"):
+            display_entities(entity_to_check[:-1])  # Retire le 's' final
 
 # ==============================================================================
 # SECTION : ADMINISTRATION
@@ -796,11 +1001,14 @@ elif page == "🔧 Administration":
     st.subheader("🔍 Informations sur la Base de Données")
     db_info_query = """
     CALL db.labels() YIELD label
-    RETURN label, size((:label)) as count
+    MATCH (n) WHERE head(labels(n)) = label
+    RETURN label AS name, count(n) as count // Renommé 'label' en 'name'
     UNION ALL
     CALL db.relationshipTypes() YIELD relationshipType
-    RETURN relationshipType, size(()-[relationshipType]->()) as count
+    MATCH ()-[r]->() WHERE type(r) = relationshipType
+    RETURN relationshipType AS name, count(r) as count // Renommé 'relationshipType' en 'name'
     """
+
     db_info_data = execute_safe_query(db_info_query, "DB Info")
     if db_info_data:
         df_db_info = pd.DataFrame(db_info_data)
@@ -836,117 +1044,104 @@ elif page == "🔧 Administration":
 
     if st.button("✨ Générer des Données de Test"):
         try:
-            # Suppression préalable pour éviter les doublons si déjà des données
+            # Suppression des données existantes
             conn.execute_query("MATCH (n) DETACH DELETE n")
 
-            # Création de nœuds
-            conn.execute_query("""
-            CREATE (c1:Client {id: 'C001', nom: 'Client A', type: 'Particulier'})
-            CREATE (c2:Client {id: 'C002', nom: 'Client B', type: 'Entreprise'})
-            CREATE (c3:Client {id: 'C003', nom: 'Client C', type: 'Particulier'})
-            CREATE (c4:Client {id: 'C004', nom: 'Client D', type: 'Entreprise'})
-            CREATE (c5:Client {id: 'C005', nom: 'Client E', type: 'Particulier'})
+            # Création des clients (une requête par instruction)
+            conn.execute_query("CREATE (c1:Client {id: 'C001', nom: 'Client A', type: 'Particulier'})")
+            conn.execute_query("CREATE (c2:Client {id: 'C002', nom: 'Client B', type: 'Entreprise'})")
+            conn.execute_query("CREATE (c3:Client {id: 'C003', nom: 'Client C', type: 'Particulier'})")
+            conn.execute_query("CREATE (c4:Client {id: 'C004', nom: 'Client D', type: 'Entreprise'})")
+            conn.execute_query("CREATE (c5:Client {id: 'C005', nom: 'Client E', type: 'Particulier'})")
 
-            CREATE (l1:Livreur {id: 'L001', nom: 'Dupont', vehicule: 'Moto', experience: 3})
-            CREATE (l2:Livreur {id: 'L002', nom: 'Martin', vehicule: 'Camionnette', experience: 5})
-            CREATE (l3:Livreur {id: 'L003', nom: 'Bernard', vehicule: 'Vélo', experience: 1})
-            CREATE (l4:Livreur {id: 'L004', nom: 'Dubois', vehicule: 'Camionnette', experience: 7})
+            # Création des livreurs
+            conn.execute_query("CREATE (l1:Livreur {id: 'L001', nom: 'Dupont', vehicule: 'Moto', experience: 3})")
+            conn.execute_query("CREATE (l2:Livreur {id: 'L002', nom: 'Martin', vehicule: 'Camionnette', experience: 5})")
+            conn.execute_query("CREATE (l3:Livreur {id: 'L003', nom: 'Bernard', vehicule: 'Vélo', experience: 1})")
+            conn.execute_query("CREATE (l4:Livreur {id: 'L004', nom: 'Dubois', vehicule: 'Camionnette', experience: 7})")
 
-            CREATE (e1:Entrepôt {id: 'E001', nom: 'Entrepôt Nord', capacite: 1000})
-            CREATE (e2:Entrepôt {id: 'E002', nom: 'Entrepôt Sud', capacite: 1500})
-            CREATE (e3:Entrepôt {id: 'E003', nom: 'Entrepôt Ouest', capacite: 800})
+            # Création des entrepôts
+            conn.execute_query("CREATE (e1:Entrepôt {id: 'E001', nom: 'Entrepôt Nord', capacite: 1000})")
+            conn.execute_query("CREATE (e2:Entrepôt {id: 'E002', nom: 'Entrepôt Sud', capacite: 1500})")
+            conn.execute_query("CREATE (e3:Entrepôt {id: 'E003', nom: 'Entrepôt Ouest', capacite: 800})")
 
-            CREATE (p1:Produit {id: 'P001', nom: 'Ordinateur Portable', categorie: 'Électronique', prix: 1200, poids: 2.5})
-            CREATE (p2:Produit {id: 'P002', nom: 'Livre "Neo4j"', categorie: 'Livre', prix: 30, poids: 0.5})
-            CREATE (p3:Produit {id: 'P003', nom: 'Cafetière', categorie: 'Électroménager', prix: 80, poids: 1.2})
-            CREATE (p4:Produit {id: 'P004', nom: 'Smartphone', categorie: 'Électronique', prix: 800, poids: 0.3})
-            CREATE (p5:Produit {id: 'P005', nom: 'Casque Audio', categorie: 'Électronique', prix: 150, poids: 0.2})
+            # Création des produits
+            conn.execute_query("CREATE (p1:Produit {id: 'P001', nom: 'Ordinateur Portable', categorie: 'Électronique', prix: 1200, poids: 2.5})")
+            conn.execute_query("CREATE (p2:Produit {id: 'P002', nom: 'Livre \"Neo4j\"', categorie: 'Livre', prix: 30, poids: 0.5})")
+            conn.execute_query("CREATE (p3:Produit {id: 'P003', nom: 'Cafetière', categorie: 'Électroménager', prix: 80, poids: 1.2})")
+            conn.execute_query("CREATE (p4:Produit {id: 'P004', nom: 'Smartphone', categorie: 'Électronique', prix: 800, poids: 0.3})")
+            conn.execute_query("CREATE (p5:Produit {id: 'P005', nom: 'Casque Audio', categorie: 'Électronique', prix: 150, poids: 0.2})")
 
-            CREATE (z1:Zone {id: 'Z001', nom: 'Centre Ville', densite_population: 'Élevée'})
-            CREATE (z2:Zone {id: 'Z002', nom: 'Banlieue Ouest', densite_population: 'Moyenne'})
-            CREATE (z3:Zone {id: 'Z003', nom: 'Zone Industrielle', densite_population: 'Faible'})
-            CREATE (z4:Zone {id: 'Z004', nom: 'Quartier Résidentiel', densite_population: 'Moyenne'})
-            """)
+            # Création des zones
+            conn.execute_query("CREATE (z1:Zone {id: 'Z001', nom: 'Centre Ville', densite_population: 'Élevée'})")
+            conn.execute_query("CREATE (z2:Zone {id: 'Z002', nom: 'Banlieue Ouest', densite_population: 'Moyenne'})")
+            conn.execute_query("CREATE (z3:Zone {id: 'Z003', nom: 'Zone Industrielle', densite_population: 'Faible'})")
+            conn.execute_query("CREATE (z4:Zone {id: 'Z004', nom: 'Quartier Résidentiel', densite_population: 'Moyenne'})")
 
-            # Création de relations
-            conn.execute_query("""
-            MATCH (c1:Client {id: 'C001'}), (z1:Zone {id: 'Z001'}) CREATE (c1)-[:LOCATED_IN]->(z1)
-            MATCH (c2:Client {id: 'C002'}), (z2:Zone {id: 'Z002'}) CREATE (c2)-[:LOCATED_IN]->(z2)
-            MATCH (c3:Client {id: 'C003'}), (z1:Zone {id: 'Z001'}) CREATE (c3)-[:LOCATED_IN]->(z1)
-            MATCH (c4:Client {id: 'C004'}), (z3:Zone {id: 'Z003'}) CREATE (c4)-[:LOCATED_IN]->(z3)
-            MATCH (c5:Client {id: 'C005'}), (z4:Zone {id: 'Z004'}) CREATE (c5)-[:LOCATED_IN]->(z4)
+            # Création des relations LOCATED_IN
+            conn.execute_query("MATCH (c1:Client {id: 'C001'}), (z1:Zone {id: 'Z001'}) CREATE (c1)-[:LOCATED_IN]->(z1)")
+            conn.execute_query("MATCH (c2:Client {id: 'C002'}), (z2:Zone {id: 'Z002'}) CREATE (c2)-[:LOCATED_IN]->(z2)")
+            conn.execute_query("MATCH (c3:Client {id: 'C003'}), (z1:Zone {id: 'Z001'}) CREATE (c3)-[:LOCATED_IN]->(z1)")
+            conn.execute_query("MATCH (c4:Client {id: 'C004'}), (z3:Zone {id: 'Z003'}) CREATE (c4)-[:LOCATED_IN]->(z3)")
+            conn.execute_query("MATCH (c5:Client {id: 'C005'}), (z4:Zone {id: 'Z004'}) CREATE (c5)-[:LOCATED_IN]->(z4)")
 
-            MATCH (l1:Livreur {id: 'L001'}), (z1:Zone {id: 'Z001'}) CREATE (l1)-[:ASSIGNED_TO]->(z1)
-            MATCH (l2:Livreur {id: 'L002'}), (z2:Zone {id: 'Z002'}) CREATE (l2)-[:ASSIGNED_TO]->(z2)
-            MATCH (l3:Livreur {id: 'L003'}), (z1:Zone {id: 'Z001'}) CREATE (l3)-[:ASSIGNED_TO]->(z1)
-            MATCH (l4:Livreur {id: 'L004'}), (z3:Zone {id: 'Z003'}) CREATE (l4)-[:ASSIGNED_TO]->(z3)
+            # Création des relations ASSIGNED_TO
+            conn.execute_query("MATCH (l1:Livreur {id: 'L001'}), (z1:Zone {id: 'Z001'}) CREATE (l1)-[:ASSIGNED_TO]->(z1)")
+            conn.execute_query("MATCH (l2:Livreur {id: 'L002'}), (z2:Zone {id: 'Z002'}) CREATE (l2)-[:ASSIGNED_TO]->(z2)")
+            conn.execute_query("MATCH (l3:Livreur {id: 'L003'}), (z1:Zone {id: 'Z001'}) CREATE (l3)-[:ASSIGNED_TO]->(z1)")
+            conn.execute_query("MATCH (l4:Livreur {id: 'L004'}), (z3:Zone {id: 'Z003'}) CREATE (l4)-[:ASSIGNED_TO]->(z3)")
 
-            MATCH (p1:Produit {id: 'P001'}), (e1:Entrepôt {id: 'E001'}) CREATE (p1)-[:STOCKED_IN {quantite: 50}]->(e1)
-            MATCH (p2:Produit {id: 'P002'}), (e2:Entrepôt {id: 'E002'}) CREATE (p2)-[:STOCKED_IN {quantite: 200}]->(e2)
-            MATCH (p3:Produit {id: 'P003'}), (e1:Entrepôt {id: 'E001'}) CREATE (p3)-[:STOCKED_IN {quantite: 100}]->(e1)
-            MATCH (p4:Produit {id: 'P004'}), (e3:Entrepôt {id: 'E003'}) CREATE (p4)-[:STOCKED_IN {quantite: 75}]->(e3)
-            MATCH (p5:Produit {id: 'P005'}), (e2:Entrepôt {id: 'E002'}) CREATE (p5)-[:STOCKED_IN {quantite: 120}]->(e2)
-            """)
+            # Création des relations STOCKED_IN
+            conn.execute_query("MATCH (p1:Produit {id: 'P001'}), (e1:Entrepôt {id: 'E001'}) CREATE (p1)-[:STOCKED_IN {quantite: 50}]->(e1)")
+            conn.execute_query("MATCH (p2:Produit {id: 'P002'}), (e2:Entrepôt {id: 'E002'}) CREATE (p2)-[:STOCKED_IN {quantite: 200}]->(e2)")
+            conn.execute_query("MATCH (p3:Produit {id: 'P003'}), (e1:Entrepôt {id: 'E001'}) CREATE (p3)-[:STOCKED_IN {quantite: 100}]->(e1)")
+            conn.execute_query("MATCH (p4:Produit {id: 'P004'}), (e3:Entrepôt {id: 'E003'}) CREATE (p4)-[:STOCKED_IN {quantite: 75}]->(e3)")
+            conn.execute_query("MATCH (p5:Produit {id: 'P005'}), (e2:Entrepôt {id: 'E002'}) CREATE (p5)-[:STOCKED_IN {quantite: 120}]->(e2)")
 
-            # Création de commandes et relations complexes
-            conn.execute_query("""
-            MATCH (c1:Client {id: 'C001'}), (l1:Livreur {id: 'L001'}), (p1:Produit {id: 'P001'}), (p2:Produit {id: 'P002'})
-            CREATE (cmd1:Commande {id: 'CMD001', date_commande: date('2023-01-15'), prix_total: 1230, poids_total: 3.0, statut: 'Livré'})
-            CREATE (c1)-[:ORDERED]->(cmd1)
-            CREATE (l1)-[:DELIVERS]->(cmd1)
-            CREATE (cmd1)-[:CONTAINS {quantite: 1}]->(p1)
-            CREATE (cmd1)-[:CONTAINS {quantite: 1}]->(p2)
+            # Création des commandes et leurs relations
+            def create_commande(client_id, livreur_id, produits, date_cmd, statut):
+                # Crée une commande avec plusieurs produits
+                conn.execute_query(f"""
+                MATCH (c:Client {{id: '{client_id}'}}), (l:Livreur {{id: '{livreur_id}'}})
+                CREATE (cmd:Commande {{
+                    id: 'CMD{client_id[-1]}', 
+                    date_commande: date('{date_cmd}'), 
+                    prix_total: {sum(p['prix']*p['qte'] for p in produits)}, 
+                    poids_total: {sum(p['poids']*p['qte'] for p in produits)}, 
+                    statut: '{statut}'
+                }})
+                CREATE (c)-[:ORDERED]->(cmd)
+                CREATE (l)-[:DELIVERS]->(cmd)
+                """)
+                
+                # Ajoute les produits
+                for produit in produits:
+                    conn.execute_query(f"""
+                    MATCH (cmd:Commande {{id: 'CMD{client_id[-1]}'}}), (p:Produit {{id: '{produit['id']}'}})
+                    CREATE (cmd)-[:CONTAINS {{quantite: {produit['qte']}}}]->(p)
+                    """)
 
-            MATCH (c2:Client {id: 'C002'}), (l2:Livreur {id: 'L002'}), (p3:Produit {id: 'P003'})
-            CREATE (cmd2:Commande {id: 'CMD002', date_commande: date('2023-01-16'), prix_total: 80, poids_total: 1.2, statut: 'En cours'})
-            CREATE (c2)-[:ORDERED]->(cmd2)
-            CREATE (l2)-[:DELIVERS]->(cmd2)
-            CREATE (cmd2)-[:CONTAINS {quantite: 1}]->(p3)
+            # Exemple de commandes
+            create_commande('C001', 'L001', [{'id':'P001', 'prix':1200, 'poids':2.5, 'qte':1}, {'id':'P002', 'prix':30, 'poids':0.5, 'qte':1}], '2023-01-15', 'Livré')
+            create_commande('C002', 'L002', [{'id':'P003', 'prix':80, 'poids':1.2, 'qte':1}], '2023-01-16', 'En cours')
+            create_commande('C003', 'L001', [{'id':'P004', 'prix':800, 'poids':0.3, 'qte':1}], '2023-01-17', 'Livré')
+            create_commande('C004', 'L004', [{'id':'P001', 'prix':1200, 'poids':2.5, 'qte':1}, {'id':'P005', 'prix':150, 'poids':0.2, 'qte':1}], '2023-01-18', 'En attente')
+            create_commande('C005', 'L002', [{'id':'P002', 'prix':30, 'poids':0.5, 'qte':2}], '2023-01-19', 'Livré')
 
-            MATCH (c3:Client {id: 'C003'}), (l1:Livreur {id: 'L001'}), (p4:Produit {id: 'P004'})
-            CREATE (cmd3:Commande {id: 'CMD003', date_commande: date('2023-01-17'), prix_total: 800, poids_total: 0.3, statut: 'Livré'})
-            CREATE (c3)-[:ORDERED]->(cmd3)
-            CREATE (l1)-[:DELIVERS]->(cmd3)
-            CREATE (cmd3)-[:CONTAINS {quantite: 1}]->(p4)
-
-            MATCH (c4:Client {id: 'C004'}), (l4:Livreur {id: 'L004'}), (p1:Produit {id: 'P001'}), (p5:Produit {id: 'P005'})
-            CREATE (cmd4:Commande {id: 'CMD004', date_commande: date('2023-01-18'), prix_total: 1350, poids_total: 2.7, statut: 'En attente'})
-            CREATE (c4)-[:ORDERED]->(cmd4)
-            CREATE (l4)-[:DELIVERS]->(cmd4)
-            CREATE (cmd4)-[:CONTAINS {quantite: 1}]->(p1)
-            CREATE (cmd4)-[:CONTAINS {quantite: 1}]->(p5)
-
-            MATCH (c5:Client {id: 'C005'}), (l2:Livreur {id: 'L002'}), (p2:Produit {id: 'P002'})
-            CREATE (cmd5:Commande {id: 'CMD005', date_commande: date('2023-01-19'), prix_total: 60, poids_total: 1.0, statut: 'Livré'})
-            CREATE (c5)-[:ORDERED]->(cmd5)
-            CREATE (l2)-[:DELIVERS]->(cmd5)
-            CREATE (cmd5)-[:CONTAINS {quantite: 2}]->(p2)
-            """)
-
-            # Création de trajets
-            conn.execute_query("""
-            MATCH (e1:Entrepôt {id: 'E001'}), (z1:Zone {id: 'Z001'})
-            CREATE (t1:Trajet {id: 'TRJ001', origine: 'E001', distance: 15, duree: 30, cout: 150})
-            CREATE (t1)-[:PASSED_BY]->(z1)
-
-            MATCH (e2:Entrepôt {id: 'E002'}), (z2:Zone {id: 'Z002'})
-            CREATE (t2:Trajet {id: 'TRJ002', origine: 'E002', distance: 25, duree: 45, cout: 200})
-            CREATE (t2)-[:PASSED_BY]->(z2)
-
-            MATCH (e1:Entrepôt {id: 'E001'}), (z4:Zone {id: 'Z004'})
-            CREATE (t3:Trajet {id: 'TRJ003', origine: 'E001', distance: 20, duree: 40, cout: 180})
-            CREATE (t3)-[:PASSED_BY]->(z4)
-
-            MATCH (e3:Entrepôt {id: 'E003'}), (z3:Zone {id: 'Z003'})
-            CREATE (t4:Trajet {id: 'TRJ004', origine: 'E003', distance: 10, duree: 20, cout: 90})
-            CREATE (t4)-[:PASSED_BY]->(z3)
-            """)
+            # Création des trajets
+            conn.execute_query("MATCH (e1:Entrepôt {id: 'E001'}), (z1:Zone {id: 'Z001'}) CREATE (t1:Trajet {id: 'TRJ001', origine: 'E001', distance: 15, duree: 30, cout: 150})-[:PASSED_BY]->(z1)")
+            conn.execute_query("MATCH (e2:Entrepôt {id: 'E002'}), (z2:Zone {id: 'Z002'}) CREATE (t2:Trajet {id: 'TRJ002', origine: 'E002', distance: 25, duree: 45, cout: 200})-[:PASSED_BY]->(z2)")
+            conn.execute_query("MATCH (e1:Entrepôt {id: 'E001'}), (z4:Zone {id: 'Z004'}) CREATE (t3:Trajet {id: 'TRJ003', origine: 'E001', distance: 20, duree: 40, cout: 180})-[:PASSED_BY]->(z4)")
+            conn.execute_query("MATCH (e3:Entrepôt {id: 'E003'}), (z3:Zone {id: 'Z003'}) CREATE (t4:Trajet {id: 'TRJ004', origine: 'E003', distance: 10, duree: 20, cout: 90})-[:PASSED_BY]->(z3)")
 
             st.success("✅ Données de test générées avec succès. Actualisation de la page...")
-            st.cache_resource.clear() # Efface le cache pour recharger la connexion si nécessaire
-            st.experimental_rerun() # Recharge l'application pour refléter les nouvelles données
+            st.cache_resource.clear()
+            st.experimental_rerun()
+
         except Exception as e:
-            st.error(f"❌ Erreur lors de la génération des données de test : {e}")
+            st.error(f"❌ Erreur lors de la génération des données de test : {str(e)}")
+
+
 
 # Note: La fermeture de la connexion Neo4j est gérée par st.cache_resource.
 # Elle sera fermée automatiquement lorsque l'application Streamlit s'arrêtera.

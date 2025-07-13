@@ -1,4 +1,5 @@
 import streamlit as st
+
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
@@ -13,7 +14,7 @@ import json
 # Configuration de la page Streamlit
 st.set_page_config(
     page_title="Agence de Livraison - Dashboard Neo4j",
-    page_icon="🚚",
+    page_icon="icon.png",
     layout="wide",
     initial_sidebar_state="expanded"
 )
@@ -176,34 +177,59 @@ def init_neo4j_connection():
         connection.execute_query("RETURN 1")
         return connection
     except Exception as e:
-        st.error(f"❌ Erreur de connexion à Neo4j: {e}. Veuillez vérifier l'URI, l'utilisateur et le mot de passe.")
+        st.error(f"Erreur de connexion à Neo4j: {e}. Veuillez vérifier l'URI, l'utilisateur et le mot de passe.")
         st.stop() # Arrête l'exécution de l'application si la connexion échoue
         return None
 
 # Header principal de l'application
+
 st.markdown("""
 <div class="main-header">
-    <h1>🚚 Agence de Livraison - Dashboard Neo4j</h1>
+    <h1>
+    Agence de Livraison - Dashboard Neo4j</h1>
     <p>Système de gestion et d'optimisation des flux logistiques</p>
 </div>
 """, unsafe_allow_html=True)
 
 # Sidebar pour la navigation
-st.sidebar.title("🎯 Navigation")
-page = st.sidebar.selectbox(
-    "Choisissez une section",
-    [
-        "🏠 Tableau de Bord",
-        "📍 Analyse des Zones",
-        "🛣️ Optimisation Trajets",
-        "👥 Gestion Livreurs",
-        "📦 Analyse Produits",
-        "👤 Gestion Clients",
-        "📊 Reporting Exécutif",
-        "📤 Importer Données",
-        "🔧 Administration"
-    ]
-)
+
+
+from streamlit_option_menu import option_menu
+# Sidebar navigation with icons
+with st.sidebar:
+    selected = option_menu(
+        menu_title="Navigation",  # Required
+        options=[
+            "Tableau de Bord", 
+            "Analyse des Zones",
+            "Optimisation Trajets",
+            "Gestion Livreurs",
+            "Analyse Produits",
+            "Gestion Clients",
+            "Reporting Exécutif",
+            "Importer Données",
+            "Administration"
+        ],
+        icons=[
+            "speedometer2", 
+            "map",
+            "geo-alt",
+            "people", 
+            "box-seam",
+            "person", 
+            "graph-up",
+            "upload", 
+            "gear"
+        ],
+        menu_icon="menu-button",  # Optional
+        default_index=0,  # Optional
+        styles={
+            "container": {"padding": "5px"},
+            "icon": {"color": "whith", "font-size": "18px"}, 
+            "nav-link": {"font-size": "16px", "text-align": "left", "margin": "0px"},
+            "nav-link-selected": {"background-color": "#007bff", "color": "white"},  # Highlight selected link
+        }
+    )
 
 # Initialisation de la connexion Neo4j
 conn = init_neo4j_connection()
@@ -223,13 +249,13 @@ def execute_safe_query(query, title="Requête"):
 # ==============================================================================
 # SECTION : TABLEAU DE BORD
 # ==============================================================================
-if page == "🏠 Tableau de Bord":
-    st.header("📊 Vue d'ensemble de l'agence")
+if selected == "Tableau de Bord":
+    st.header("Vue d'ensemble de l'agence")
     
     st.markdown("---")
 
     # KPIs principaux
-    st.subheader("📈 Indicateurs Clés de Performance")
+    st.subheader("Indicateurs Clés de Performance")
     kpi_query = """
     MATCH (cmd:Commande)
     WITH COUNT(cmd) as total_commandes, SUM(cmd.prix_total) as ca_total, 
@@ -293,7 +319,7 @@ if page == "🏠 Tableau de Bord":
     col1, col2 = st.columns(2)
     
     with col1:
-        st.subheader("📈 Évolution des Commandes")
+        st.subheader("Évolution des Commandes")
         evolution_query = """
         MATCH (cmd:Commande)
         RETURN cmd.date_commande as date, COUNT(cmd) as nb_commandes, 
@@ -304,7 +330,7 @@ if page == "🏠 Tableau de Bord":
         evolution_data = execute_safe_query(evolution_query, "Évolution des Commandes")
         if evolution_data:
             df_evolution = pd.DataFrame(evolution_data)
-            df_evolution['date'] = pd.to_datetime(df_evolution['date']) # Convertir en datetime
+            df_evolution['date'] = df_evolution['date'].apply(lambda x: pd.Timestamp(x.to_native()).date())
             fig_evolution = px.line(df_evolution, x='date', y='nb_commandes', 
                                   title="Nombre de commandes par jour",
                                   labels={'date': 'Date', 'nb_commandes': 'Nombre de Commandes'})
@@ -313,7 +339,7 @@ if page == "🏠 Tableau de Bord":
             st.info("Aucune donnée d'évolution des commandes disponible.")
     
     with col2:
-        st.subheader("🏆 Top Zones par CA")
+        st.subheader("Top Zones par CA")
         top_zones_query = """
         MATCH (c:Client)-[:LOCATED_IN]->(z:Zone), (c)-[:ORDERED]->(cmd:Commande)
         RETURN z.nom as zone, SUM(cmd.prix_total) as ca_total, COUNT(cmd) as nb_commandes
@@ -334,7 +360,7 @@ if page == "🏠 Tableau de Bord":
     st.markdown("---")
 
     # Statut des commandes
-    st.subheader("📋 Statut des Commandes")
+    st.subheader("Statut des Commandes")
     statut_query = """
     MATCH (cmd:Commande)
     RETURN cmd.statut as statut, COUNT(cmd) as nb_commandes, 
@@ -363,13 +389,13 @@ if page == "🏠 Tableau de Bord":
 # ==============================================================================
 # SECTION : ANALYSE DES ZONES
 # ==============================================================================
-elif page == "📍 Analyse des Zones":
-    st.header("🗺️ Analyse des Zones de Livraison")
+elif selected == "Analyse des Zones":
+    st.header("Analyse des Zones de Livraison")
     
     st.markdown("---")
 
     # Zones à forte densité
-    st.subheader("🎯 Zones à Forte Densité de Commandes")
+    st.subheader("Zones à Forte Densité de Commandes")
     
     zones_query = """
     MATCH (c:Client)-[:LOCATED_IN]->(z:Zone)<-[:ASSIGNED_TO]-(l:Livreur)-[:DELIVERS]->(cmd:Commande)
@@ -407,7 +433,7 @@ elif page == "📍 Analyse des Zones":
     st.markdown("---")
 
     # Analyse des goulets d'étranglement
-    st.subheader("⚠️ Détection des Goulets d'Étranglement")
+    st.subheader("Détection des Goulets d'Étranglement")
     
     goulets_query = """
     MATCH (z:Zone)<-[:ASSIGNED_TO]-(l:Livreur)-[:DELIVERS]->(cmd:Commande)
@@ -445,13 +471,13 @@ elif page == "📍 Analyse des Zones":
 # ==============================================================================
 # SECTION : OPTIMISATION TRAJETS
 # ==============================================================================
-elif page == "🛣️ Optimisation Trajets":
-    st.header("🚀 Optimisation des Itinéraires")
+elif selected == "Optimisation Trajets":
+    st.header("Optimisation des Itinéraires")
     
     st.markdown("---")
 
     # Analyse des trajets coûteux
-    st.subheader("💰 Analyse des Coûts de Transport")
+    st.subheader("Analyse des Coûts de Transport")
     
     trajets_query = """
     MATCH (t:Trajet)
@@ -509,7 +535,7 @@ elif page == "🛣️ Optimisation Trajets":
     st.markdown("---")
 
     # Optimisation des itinéraires
-    st.subheader("🎯 Suggestions d'Optimisation")
+    st.subheader("Suggestions d'Optimisation")
     
     optim_query = """
     MATCH (e:Entrepôt), (t:Trajet {origine: e.id})-[:PASSED_BY]->(z:Zone)
@@ -535,13 +561,13 @@ elif page == "🛣️ Optimisation Trajets":
 # ==============================================================================
 # SECTION : GESTION LIVREURS
 # ==============================================================================
-elif page == "👥 Gestion Livreurs":
-    st.header("👨‍💼 Gestion des Livreurs")
+elif selected == "Gestion Livreurs":
+    st.header("Gestion des Livreurs")
     
     st.markdown("---")
 
     # Performance des livreurs
-    st.subheader("📊 Performance des Livreurs")
+    st.subheader("Performance des Livreurs")
     
     livreurs_query = """
     MATCH (l:Livreur)-[:ASSIGNED_TO]->(z:Zone), (l)-[:DELIVERS]->(cmd:Commande)
@@ -589,7 +615,7 @@ elif page == "👥 Gestion Livreurs":
     st.markdown("---")
 
     # Analyse par véhicule
-    st.subheader("🚗 Analyse par Type de Véhicule")
+    st.subheader("Analyse par Type de Véhicule")
     
     vehicules_query = """
     MATCH (l:Livreur)-[:DELIVERS]->(cmd:Commande)
@@ -620,13 +646,13 @@ elif page == "👥 Gestion Livreurs":
 # ==============================================================================
 # SECTION : ANALYSE PRODUITS
 # ==============================================================================
-elif page == "📦 Analyse Produits":
-    st.header("📦 Analyse des Produits")
+elif selected == "Analyse Produits":
+    st.header("Analyse des Produits")
     
     st.markdown("---")
 
     # Produits populaires
-    st.subheader("🏆 Produits les Plus Populaires")
+    st.subheader("Produits les Plus Populaires")
     
     produits_query = """
     MATCH (cmd:Commande)-[c:CONTAINS]->(p:Produit)
@@ -675,7 +701,7 @@ elif page == "📦 Analyse Produits":
     st.markdown("---")
 
     # Analyse des stocks
-    st.subheader("📊 Analyse des Stocks par Entrepôt")
+    st.subheader("Analyse des Stocks par Entrepôt")
     
     stocks_query = """
     MATCH (p:Produit)-[s:STOCKED_IN]->(e:Entrepôt)
@@ -703,13 +729,13 @@ elif page == "📦 Analyse Produits":
 # ==============================================================================
 # SECTION : GESTION CLIENTS
 # ==============================================================================
-elif page == "👤 Gestion Clients":
-    st.header("👥 Gestion des Clients")
+elif selected == "Gestion Clients":
+    st.header("Gestion des Clients")
     
     st.markdown("---")
 
     # Analyse des clients
-    st.subheader("🎯 Analyse de la Clientèle")
+    st.subheader("Analyse de la Clientèle")
     
     clients_query = """
     MATCH (c:Client)-[:ORDERED]->(cmd:Commande)
@@ -775,11 +801,11 @@ elif page == "👤 Gestion Clients":
 # SECTION : REPORTING EXÉCUTIF
 # ==============================================================================
 
-elif page == "📊 Reporting Exécutif":
-    st.header("📈 Reporting Exécutif")
+elif selected == "Reporting Exécutif":
+    st.header("Reporting Exécutif")
 
     # KPIs principaux pour le reporting
-    st.subheader("📊 Vue d'ensemble des Performances")
+    st.subheader("Vue d'ensemble des Performances")
     kpi_reporting_query = """
     MATCH (cmd:Commande)
     WITH COUNT(cmd) as total_commandes, SUM(cmd.prix_total) as ca_total,
@@ -836,7 +862,7 @@ elif page == "📊 Reporting Exécutif":
         st.warning("Aucune donnée KPI disponible pour le reporting exécutif. Veuillez générer des données de test si ce n'est pas déjà fait.")
 
     # Graphiques de tendance des commandes et CA
-    st.subheader("📈 Tendance des Commandes et du Chiffre d'Affaires")
+    st.subheader("Tendance des Commandes et du Chiffre d'Affaires")
     reporting_evolution_query = """
     MATCH (cmd:Commande)
     WITH cmd.date_commande as date, COUNT(cmd) as nb_commandes,
@@ -846,9 +872,10 @@ elif page == "📊 Reporting Exécutif":
     """
     reporting_evolution_data = execute_safe_query(reporting_evolution_query, "Reporting Évolution")
 
+
     if reporting_evolution_data:
         df_reporting_evolution = pd.DataFrame(reporting_evolution_data)
-        df_reporting_evolution['date'] = pd.to_datetime(df_reporting_evolution['date']) # Convertir en datetime
+        df_reporting_evolution['date'] = df_reporting_evolution['date'].apply(lambda d: datetime(d.year, d.month, d.day)) # Convertir en datetime
 
         fig_reporting_evolution = make_subplots(specs=[[{"secondary_y": True}]])
 
@@ -872,7 +899,7 @@ elif page == "📊 Reporting Exécutif":
         st.info("Pas de données d'évolution des commandes disponibles pour le reporting.")
 
     # Répartition des commandes par statut
-    st.subheader("📋 Répartition des Commandes par Statut")
+    st.subheader("Répartition des Commandes par Statut")
     reporting_statut_query = """
     MATCH (cmd:Commande)
     WITH cmd.statut as statut, COUNT(cmd) as nb_commandes,
@@ -899,7 +926,7 @@ elif page == "📊 Reporting Exécutif":
         st.info("Pas de données de statut de commande disponibles pour le reporting.")
 
     # Top 5 des livreurs par CA généré
-    st.subheader("🏆 Top 5 Livreurs par CA Généré")
+    st.subheader("Top 5 Livreurs par CA Généré")
     reporting_top_livreurs_query = """
     MATCH (l:Livreur)-[:DELIVERS]->(cmd:Commande)
     RETURN l.nom as Livreur, SUM(cmd.prix_total) as CA_Généré
@@ -918,11 +945,11 @@ elif page == "📊 Reporting Exécutif":
 
 
 # ==================== IMPORT DE DONNEES ==================== 
-elif page == "📤 Importer Données":
-    st.header("🛠️ Interface d'Import Métier")
+elif selected == "Importer Données":
+    st.header("Interface d'Import Métier")
     
     # Section 1: Ajout manuel
-    with st.expander("➕ Ajout Manuel", expanded=True):
+    with st.expander("Ajout Manuel", expanded=True):
         col1, col2 = st.columns(2)
         
         with col1:
@@ -975,7 +1002,7 @@ elif page == "📤 Importer Données":
                         create_relationship(from_type, from_id, to_type, to_id, rel_type)
     
     # Section 2: Import CSV
-    with st.expander("📁 Import par Fichier CSV", expanded=True):
+    with st.expander("Import par Fichier CSV", expanded=True):
         st.info("Format requis: Fichier CSV avec colonnes correspondant aux propriétés des nœuds")
         uploaded_file = st.file_uploader("Choissisez un fichier CSV", type="csv")
         
@@ -984,7 +1011,7 @@ elif page == "📤 Importer Données":
                 process_csv_import(uploaded_file)
 
     # Section 3: Prévisualisation données existantes
-    with st.expander("🔍 Vérifier les Données Existant"):
+    with st.expander("Vérifier les Données Existant"):
         entity_to_check = st.selectbox("Voir tous les", 
             ["Clients", "Produits", "Livreurs", "Commandes"])
         if st.button("Afficher"):
@@ -993,12 +1020,12 @@ elif page == "📤 Importer Données":
 # ==============================================================================
 # SECTION : ADMINISTRATION
 # ==============================================================================
-elif page == "🔧 Administration":
-    st.header("⚙️ Outils d'Administration et de Maintenance")
+elif selected == "Administration":
+    st.header("Outils d'Administration et de Maintenance")
 
     st.markdown("---")
 
-    st.subheader("🔍 Informations sur la Base de Données")
+    st.subheader("Informations sur la Base de Données")
     db_info_query = """
     CALL db.labels() YIELD label
     MATCH (n) WHERE head(labels(n)) = label
@@ -1018,31 +1045,33 @@ elif page == "🔧 Administration":
 
     st.markdown("---")
 
-    st.subheader("🧹 Nettoyage et Optimisation")
-    st.warning("🚨 Attention: Ces opérations sont irréversibles et peuvent supprimer toutes vos données. Utilisez avec prudence.")
+    st.subheader("Nettoyage et Optimisation")
+    st.warning("Attention: Ces opérations sont irréversibles et peuvent supprimer toutes vos données. Utilisez avec prudence.")
 
-    if st.button("🗑️ Supprimer TOUTES les données (CLEANUP)"):
-        confirm_delete = st.checkbox("Je suis sûr de vouloir supprimer toutes les données.")
-        if confirm_delete:
-            cleanup_query = """
-            MATCH (n) DETACH DELETE n
-            """
-            try:
+    if st.button("Supprimer TOUTES les données (CLEANUP)"):
+        cleanup_query = """
+        MATCH (n) DETACH DELETE n
+        """
+        try:
+            # Vérifiez si la connexion est établie
+            if conn is not None:
                 conn.execute_query(cleanup_query)
-                st.success("✅ Toutes les données ont été supprimées de la base de données.")
-                st.cache_resource.clear() # Efface le cache pour recharger la connexion si nécessaire
-                st.experimental_rerun() # Recharge l'application pour refléter les changements
-            except Exception as e:
-                st.error(f"❌ Erreur lors du nettoyage : {e}")
-        else:
-            st.info("Veuillez cocher la case de confirmation pour activer la suppression.")
+                st.success("Toutes les données ont été supprimées de la base de données.")
+                st.cache_resource.clear()  # Efface le cache pour recharger la connexion si nécessaire
+                st.experimental_rerun()  # Recharge l'application pour refléter les changements
+            else:
+                st.error("La connexion à la base de données n'est pas établie.")
+        except Exception as e:
+            st.error(f"Erreur lors du nettoyage : {e}")
+
+        
 
     st.markdown("---")
 
-    st.subheader("➕ Génération de Données de Test")
+    st.subheader("Génération de Données de Test")
     st.info("Permet de recréer un jeu de données de base pour les démonstrations ou le développement.")
 
-    if st.button("✨ Générer des Données de Test"):
+    if st.button("Générer des Données de Test"):
         try:
             # Suppression des données existantes
             conn.execute_query("MATCH (n) DETACH DELETE n")
@@ -1134,12 +1163,12 @@ elif page == "🔧 Administration":
             conn.execute_query("MATCH (e1:Entrepôt {id: 'E001'}), (z4:Zone {id: 'Z004'}) CREATE (t3:Trajet {id: 'TRJ003', origine: 'E001', distance: 20, duree: 40, cout: 180})-[:PASSED_BY]->(z4)")
             conn.execute_query("MATCH (e3:Entrepôt {id: 'E003'}), (z3:Zone {id: 'Z003'}) CREATE (t4:Trajet {id: 'TRJ004', origine: 'E003', distance: 10, duree: 20, cout: 90})-[:PASSED_BY]->(z3)")
 
-            st.success("✅ Données de test générées avec succès. Actualisation de la page...")
+            st.success("Données de test générées avec succès. Actualisation de la page...")
             st.cache_resource.clear()
             st.experimental_rerun()
 
         except Exception as e:
-            st.error(f"❌ Erreur lors de la génération des données de test : {str(e)}")
+            st.error(f"Erreur lors de la génération des données de test : {str(e)}")
 
 
 

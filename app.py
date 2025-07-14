@@ -181,6 +181,78 @@ def init_neo4j_connection():
         st.stop() # Arrête l'exécution de l'application si la connexion échoue
         return None
 
+
+# Fonctions utilitaires pour les nouvelles fonctionnalités
+def create_complete_order(cmd_id, client_id, date, address, products_str, livreur_id=None):
+    """Crée une commande complète avec ses produits et relations"""
+    try:
+        # Créer la commande
+        order_data = {
+            "id": cmd_id,
+            "nom": f"Commande {cmd_id}",
+            "client_id": client_id,
+            "date": date.strftime("%Y-%m-%d"),
+            "statut": "Confirmée",
+            "adresse_livraison": address
+        }
+        
+        create_entity("Commande", order_data)
+        
+        # Traiter les produits
+        total_amount = 0
+        for line in products_str.strip().split('\n'):
+            if ':' in line:
+                prod_id, quantity = line.strip().split(':')
+                quantity = int(quantity)
+                
+                # Créer relation CONTAINS entre commande et produit
+                create_relationship("Commande", cmd_id, "Produit", prod_id, 
+                                  "CONTAINS", {"quantite": quantity})
+                
+                # Calculer le montant (nécessiterait une requête pour le prix)
+                # total_amount += get_product_price(prod_id) * quantity
+        
+        # Assigner livreur si spécifié
+        if livreur_id:
+            create_relationship("Livreur", livreur_id, "Commande", cmd_id, "ASSIGNED_TO")
+        
+        # Créer relation client-commande
+        create_relationship("Client", client_id, "Commande", cmd_id, "ORDERED")
+        
+        st.success(f"Commande {cmd_id} créée avec succès!")
+        
+    except Exception as e:
+        st.error(f"Erreur lors de la création de la commande: {str(e)}")
+
+def display_general_stats():
+    """Affiche des statistiques générales sur les données"""
+    try:
+        with driver.session() as session:
+            # Compter les nœuds par type
+            query = """
+            MATCH (n)
+            RETURN labels(n)[0] as type, count(n) as count
+            ORDER BY count DESC
+            """
+            result = session.run(query)
+            
+            st.subheader("Statistiques des Entités")
+            stats_data = []
+            for record in result:
+                stats_data.append({
+                    "Type": record["type"],
+                    "Nombre": record["count"]
+                })
+            
+            if stats_data:
+                st.dataframe(pd.DataFrame(stats_data))
+            else:
+                st.info("Aucune donnée trouvée")
+                
+    except Exception as e:
+        st.error(f"Erreur lors de l'affichage des statistiques: {str(e)}")
+
+
 # Header principal de l'application
 
 st.markdown("""
@@ -945,6 +1017,7 @@ elif selected == "Reporting Exécutif":
 
 
 # ==================== IMPORT DE DONNEES ==================== 
+# ==================== IMPORT DE DONNEES ==================== 
 elif selected == "Importer Données":
     st.header("Interface d'Import Métier")
     
@@ -956,7 +1029,7 @@ elif selected == "Importer Données":
             with st.form("Nouvelle Entité"):
                 st.subheader("Créer une Entité")
                 entity_type = st.selectbox("Type d'entité", 
-                    ["Client", "Produit", "Livreur", "Entrepôt", "Zone"])
+                    ["Client", "Produit", "Livreur", "Entrepôt", "Zone", "Commande", "Trajet"])
                 
                 entity_id = st.text_input("ID Unique*")
                 entity_name = st.text_input("Nom*")
@@ -964,58 +1037,227 @@ elif selected == "Importer Données":
                 # Champs spécifiques par type
                 if entity_type == "Client":
                     client_type = st.selectbox("Type Client", ["Particulier", "Entreprise"])
+                    client_address = st.text_input("Adresse")
+                    client_phone = st.text_input("Téléphone")
+                    
                 elif entity_type == "Produit":
                     product_cat = st.text_input("Catégorie*")
                     product_price = st.number_input("Prix*", min_value=0.0)
                     product_weight = st.number_input("Poids (kg)", min_value=0.0)
+                    product_stock = st.number_input("Stock", min_value=0)
+                    
+                elif entity_type == "Livreur":
+                    livreur_phone = st.text_input("Téléphone")
+                    livreur_vehicle = st.selectbox("Véhicule", ["Moto", "Voiture", "Camionnette", "Vélo"])
+                    livreur_zone = st.text_input("Zone de livraison")
+                    
+                elif entity_type == "Entrepôt":
+                    entrepot_address = st.text_input("Adresse*")
+                    entrepot_capacity = st.number_input("Capacité", min_value=0)
+                    
+                elif entity_type == "Zone":
+                    zone_city = st.text_input("Ville")
+                    zone_postal = st.text_input("Code postal")
+                    
+                elif entity_type == "Commande":
+                    st.markdown("**Informations Commande**")
+                    order_client_id = st.text_input("ID Client*")
+                    order_date = st.date_input("Date de commande")
+                    order_status = st.selectbox("Statut", 
+                        ["En attente", "Confirmée", "En préparation", "Expédiée", "Livrée", "Annulée"])
+                    order_total = st.number_input("Montant total", min_value=0.0)
+                    order_address = st.text_input("Adresse de livraison*")
+                    
+                elif entity_type == "Trajet":
+                    st.markdown("**Informations Trajet**")
+                    trajet_livreur_id = st.text_input("ID Livreur*")
+                    trajet_date = st.date_input("Date du trajet")
+                    trajet_start = st.text_input("Point de départ*")
+                    trajet_end = st.text_input("Point d'arrivée*")
+                    trajet_distance = st.number_input("Distance (km)", min_value=0.0)
+                    trajet_duration = st.number_input("Durée estimée (minutes)", min_value=0)
+                    trajet_status = st.selectbox("Statut trajet", 
+                        ["Planifié", "En cours", "Terminé", "Annulé"])
                 
                 if st.form_submit_button(f"Créer {entity_type}"):
                     if not entity_id or not entity_name:
                         st.warning("Les champs obligatoires (*) doivent être remplis")
                     else:
-                        create_entity(entity_type, {
-                            "id": entity_id,
-                            "nom": entity_name,
-                            **({"type": client_type} if entity_type == "Client" else {}),
-                            **({"categorie": product_cat, "prix": product_price, 
-                               "poids": product_weight} if entity_type == "Produit" else {})
-                        })
+                        # Construction du dictionnaire de données selon le type
+                        entity_data = {"id": entity_id, "nom": entity_name}
+                        
+                        if entity_type == "Client":
+                            entity_data.update({
+                                "type": client_type,
+                                "adresse": client_address,
+                                "telephone": client_phone
+                            })
+                        elif entity_type == "Produit":
+                            entity_data.update({
+                                "categorie": product_cat,
+                                "prix": product_price,
+                                "poids": product_weight,
+                                "stock": product_stock
+                            })
+                        elif entity_type == "Livreur":
+                            entity_data.update({
+                                "telephone": livreur_phone,
+                                "vehicule": livreur_vehicle,
+                                "zone": livreur_zone
+                            })
+                        elif entity_type == "Entrepôt":
+                            entity_data.update({
+                                "adresse": entrepot_address,
+                                "capacite": entrepot_capacity
+                            })
+                        elif entity_type == "Zone":
+                            entity_data.update({
+                                "ville": zone_city,
+                                "code_postal": zone_postal
+                            })
+                        elif entity_type == "Commande":
+                            if not order_client_id or not order_address:
+                                st.warning("ID Client et adresse de livraison obligatoires")
+                            else:
+                                entity_data.update({
+                                    "client_id": order_client_id,
+                                    "date": order_date.strftime("%Y-%m-%d"),
+                                    "statut": order_status,
+                                    "montant_total": order_total,
+                                    "adresse_livraison": order_address
+                                })
+                        elif entity_type == "Trajet":
+                            if not trajet_livreur_id or not trajet_start or not trajet_end:
+                                st.warning("ID Livreur, point de départ et d'arrivée obligatoires")
+                            else:
+                                entity_data.update({
+                                    "livreur_id": trajet_livreur_id,
+                                    "date": trajet_date.strftime("%Y-%m-%d"),
+                                    "point_depart": trajet_start,
+                                    "point_arrivee": trajet_end,
+                                    "distance": trajet_distance,
+                                    "duree": trajet_duration,
+                                    "statut": trajet_status
+                                })
+                        
+                        # Créer l'entité seulement si toutes les validations sont passées
+                        if entity_type not in ["Commande", "Trajet"] or \
+                           (entity_type == "Commande" and order_client_id and order_address) or \
+                           (entity_type == "Trajet" and trajet_livreur_id and trajet_start and trajet_end):
+                            create_entity(entity_type, entity_data)
 
         with col2:
             with st.form("Nouvelle Relation"):
                 st.subheader("Créer une Relation")
-                rel_types = ["LOCATED_IN", "STOCKED_IN", "DELIVERS", "ORDERED", "ASSIGNED_TO"]
+                rel_types = [
+                    "LOCATED_IN", "STOCKED_IN", "DELIVERS", "ORDERED", 
+                    "ASSIGNED_TO", "CONTAINS", "FOLLOWS", "SERVES"
+                ]
                 rel_type = st.selectbox("Type de relation*", rel_types)
                 
                 st.markdown("**Nœud Source**")
-                from_type = st.selectbox("Type source", ["Client", "Produit", "Livreur"])
+                from_type = st.selectbox("Type source", 
+                    ["Client", "Produit", "Livreur", "Commande", "Trajet"])
                 from_id = st.text_input("ID source*")
                 
                 st.markdown("**Nœud Cible**")
-                to_type = st.selectbox("Type cible", ["Zone", "Entrepôt", "Commande"])
+                to_type = st.selectbox("Type cible", 
+                    ["Zone", "Entrepôt", "Commande", "Trajet", "Client", "Livreur"])
                 to_id = st.text_input("ID cible*")
+                
+                # Propriétés de relation optionnelles
+                st.markdown("**Propriétés de relation (optionnel)**")
+                rel_props = {}
+                if rel_type == "CONTAINS":
+                    quantity = st.number_input("Quantité", min_value=0)
+                    if quantity > 0:
+                        rel_props["quantite"] = quantity
+                elif rel_type == "FOLLOWS":
+                    order_seq = st.number_input("Ordre de séquence", min_value=1)
+                    rel_props["ordre"] = order_seq
                 
                 if st.form_submit_button("Établir Relation"):
                     if not from_id or not to_id:
                         st.warning("IDs source et cible obligatoires")
                     else:
-                        create_relationship(from_type, from_id, to_type, to_id, rel_type)
+                        create_relationship(from_type, from_id, to_type, to_id, rel_type, rel_props)
     
     # Section 2: Import CSV
     with st.expander("Import par Fichier CSV", expanded=True):
         st.info("Format requis: Fichier CSV avec colonnes correspondant aux propriétés des nœuds")
-        uploaded_file = st.file_uploader("Choissisez un fichier CSV", type="csv")
+        
+        import_type = st.selectbox("Type d'import", 
+            ["Clients", "Produits", "Livreurs", "Commandes", "Trajets", "Relations"])
+        
+        uploaded_file = st.file_uploader("Choisissez un fichier CSV", type="csv")
         
         if uploaded_file:
-            if st.button("Lancer l'Import"):
-                process_csv_import(uploaded_file)
+            # Aperçu du fichier
+            df = pd.read_csv(uploaded_file)
+            st.subheader("Aperçu des données")
+            st.dataframe(df.head())
+            
+            # Validation des colonnes selon le type
+            required_columns = {
+                "Clients": ["id", "nom"],
+                "Produits": ["id", "nom", "categorie", "prix"],
+                "Livreurs": ["id", "nom"],
+                "Commandes": ["id", "client_id", "date", "statut", "adresse_livraison"],
+                "Trajets": ["id", "livreur_id", "date", "point_depart", "point_arrivee"],
+                "Relations": ["from_type", "from_id", "to_type", "to_id", "relation_type"]
+            }
+            
+            missing_cols = set(required_columns[import_type]) - set(df.columns)
+            if missing_cols:
+                st.error(f"Colonnes manquantes: {missing_cols}")
+            else:
+                if st.button("Lancer l'Import"):
+                    process_csv_import(uploaded_file, import_type)
 
-    # Section 3: Prévisualisation données existantes
-    with st.expander("Vérifier les Données Existant"):
+    # Section 3: Création rapide de commandes avec produits
+    with st.expander("Créer Commande Complète", expanded=False):
+        st.subheader("Créer une commande avec produits")
+        
+        with st.form("Commande Complète"):
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Informations Commande**")
+                cmd_id = st.text_input("ID Commande*")
+                cmd_client = st.text_input("ID Client*")
+                cmd_date = st.date_input("Date")
+                cmd_address = st.text_input("Adresse de livraison*")
+                
+            with col2:
+                st.markdown("**Produits**")
+                products_data = st.text_area(
+                    "Produits (format: id_produit:quantité, un par ligne)",
+                    placeholder="PROD001:2\nPROD002:1\nPROD003:3"
+                )
+                
+                livreur_assign = st.text_input("ID Livreur assigné (optionnel)")
+            
+            if st.form_submit_button("Créer Commande Complète"):
+                if not cmd_id or not cmd_client or not cmd_address:
+                    st.warning("Champs obligatoires manquants")
+                elif not products_data:
+                    st.warning("Ajoutez au moins un produit")
+                else:
+                    create_complete_order(cmd_id, cmd_client, cmd_date, cmd_address, 
+                                        products_data, livreur_assign)
+
+    # Section 4: Prévisualisation données existantes
+    with st.expander("Vérifier les Données Existantes"):
         entity_to_check = st.selectbox("Voir tous les", 
-            ["Clients", "Produits", "Livreurs", "Commandes"])
+            ["Clients", "Produits", "Livreurs", "Commandes", "Trajets", "Entrepôts", "Zones"])
+        
         if st.button("Afficher"):
             display_entities(entity_to_check[:-1])  # Retire le 's' final
+            
+        # Statistiques rapides
+        if st.button("Statistiques Générales"):
+            display_general_stats()
+
 
 # ==============================================================================
 # SECTION : ADMINISTRATION
@@ -1058,7 +1300,7 @@ elif selected == "Administration":
                 conn.execute_query(cleanup_query)
                 st.success("Toutes les données ont été supprimées de la base de données.")
                 st.cache_resource.clear()  # Efface le cache pour recharger la connexion si nécessaire
-                st.experimental_rerun()  # Recharge l'application pour refléter les changements
+                st.rerun()  # Recharge l'application pour refléter les changements
             else:
                 st.error("La connexion à la base de données n'est pas établie.")
         except Exception as e:
@@ -1069,9 +1311,196 @@ elif selected == "Administration":
     st.markdown("---")
 
     st.subheader("Génération de Données de Test")
-    st.info("Permet de recréer un jeu de données de base pour les démonstrations ou le développement.")
+    st.info("Permet de recréer un jeu de données étendu pour les démonstrations ou le développement.")
+    
 
     if st.button("Générer des Données de Test"):
+        try:
+            # Suppression des données existantes
+            conn.execute_query("MATCH (n) DETACH DELETE n")
+
+            # Création des clients (10 clients: 5 particuliers, 5 entreprises)
+            conn.execute_query("CREATE (c1:Client {id: 'C001', nom: 'Martin Dupont', type: 'Particulier', email: 'martin.dupont@email.com', telephone: '0123456789'})")
+            conn.execute_query("CREATE (c2:Client {id: 'C002', nom: 'TechCorp SARL', type: 'Entreprise', email: 'contact@techcorp.com', telephone: '0123456790'})")
+            conn.execute_query("CREATE (c3:Client {id: 'C003', nom: 'Sophie Bernard', type: 'Particulier', email: 'sophie.bernard@email.com', telephone: '0123456791'})")
+            conn.execute_query("CREATE (c4:Client {id: 'C004', nom: 'InnovatePlus SA', type: 'Entreprise', email: 'commandes@innovateplus.com', telephone: '0123456792'})")
+            conn.execute_query("CREATE (c5:Client {id: 'C005', nom: 'Jean Moreau', type: 'Particulier', email: 'jean.moreau@email.com', telephone: '0123456793'})")
+            conn.execute_query("CREATE (c6:Client {id: 'C006', nom: 'LogiServices Ltd', type: 'Entreprise', email: 'orders@logiservices.com', telephone: '0123456794'})")
+            conn.execute_query("CREATE (c7:Client {id: 'C007', nom: 'Marie Dubois', type: 'Particulier', email: 'marie.dubois@email.com', telephone: '0123456795'})")
+            conn.execute_query("CREATE (c8:Client {id: 'C008', nom: 'MegaStore Inc', type: 'Entreprise', email: 'procurement@megastore.com', telephone: '0123456796'})")
+            conn.execute_query("CREATE (c9:Client {id: 'C009', nom: 'Pierre Leroy', type: 'Particulier', email: 'pierre.leroy@email.com', telephone: '0123456797'})")
+            conn.execute_query("CREATE (c10:Client {id: 'C010', nom: 'DigitalFlow SAS', type: 'Entreprise', email: 'achats@digitalflow.com', telephone: '0123456798'})")
+
+            # Création des livreurs (6 livreurs avec différents véhicules)
+            conn.execute_query("CREATE (l1:Livreur {id: 'L001', nom: 'Dupont', prenom: 'Paul', vehicule: 'Moto', experience: 3, zone_preferee: 'Centre'})")
+            conn.execute_query("CREATE (l2:Livreur {id: 'L002', nom: 'Martin', prenom: 'Luc', vehicule: 'Camionnette', experience: 5, zone_preferee: 'Ouest'})")
+            conn.execute_query("CREATE (l3:Livreur {id: 'L003', nom: 'Bernard', prenom: 'Alex', vehicule: 'Vélo', experience: 1, zone_preferee: 'Centre'})")
+            conn.execute_query("CREATE (l4:Livreur {id: 'L004', nom: 'Dubois', prenom: 'Marc', vehicule: 'Camionnette', experience: 7, zone_preferee: 'Industrielle'})")
+            conn.execute_query("CREATE (l5:Livreur {id: 'L005', nom: 'Leroy', prenom: 'Tom', vehicule: 'Camion', experience: 10, zone_preferee: 'Périphérie'})")
+            conn.execute_query("CREATE (l6:Livreur {id: 'L006', nom: 'Rousseau', prenom: 'Julie', vehicule: 'Moto', experience: 2, zone_preferee: 'Résidentielle'})")
+
+            # Création des entrepôts (5 entrepôts avec différentes capacités)
+            conn.execute_query("CREATE (e1:Entrepôt {id: 'E001', nom: 'Entrepôt Nord', capacite: 1000, adresse: '15 Rue du Commerce Nord', specialite: 'Électronique'})")
+            conn.execute_query("CREATE (e2:Entrepôt {id: 'E002', nom: 'Entrepôt Sud', capacite: 1500, adresse: '25 Avenue du Sud', specialite: 'Général'})")
+            conn.execute_query("CREATE (e3:Entrepôt {id: 'E003', nom: 'Entrepôt Ouest', capacite: 800, adresse: '10 Boulevard Ouest', specialite: 'Électroménager'})")
+            conn.execute_query("CREATE (e4:Entrepôt {id: 'E004', nom: 'Entrepôt Central', capacite: 2000, adresse: '5 Place Centrale', specialite: 'Multimédia'})")
+            conn.execute_query("CREATE (e5:Entrepôt {id: 'E005', nom: 'Entrepôt Est', capacite: 1200, adresse: '30 Rue de l\\'Est', specialite: 'Livres'})")
+
+            # Création des produits (15 produits dans 5 catégories)
+            # Catégorie Électronique
+            conn.execute_query("CREATE (p1:Produit {id: 'P001', nom: 'Ordinateur Portable', categorie: 'Électronique', prix: 1200, poids: 2.5, stock_minimum: 10})")
+            conn.execute_query("CREATE (p2:Produit {id: 'P002', nom: 'Smartphone', categorie: 'Électronique', prix: 800, poids: 0.3, stock_minimum: 20})")
+            conn.execute_query("CREATE (p3:Produit {id: 'P003', nom: 'Tablette', categorie: 'Électronique', prix: 450, poids: 0.7, stock_minimum: 15})")
+            
+            # Catégorie Électroménager
+            conn.execute_query("CREATE (p4:Produit {id: 'P004', nom: 'Cafetière', categorie: 'Électroménager', prix: 80, poids: 1.2, stock_minimum: 25})")
+            conn.execute_query("CREATE (p5:Produit {id: 'P005', nom: 'Grille-pain', categorie: 'Électroménager', prix: 45, poids: 1.8, stock_minimum: 30})")
+            conn.execute_query("CREATE (p6:Produit {id: 'P006', nom: 'Aspirateur', categorie: 'Électroménager', prix: 220, poids: 4.5, stock_minimum: 12})")
+            
+            # Catégorie Multimédia
+            conn.execute_query("CREATE (p7:Produit {id: 'P007', nom: 'Casque Audio', categorie: 'Multimédia', prix: 150, poids: 0.2, stock_minimum: 40})")
+            conn.execute_query("CREATE (p8:Produit {id: 'P008', nom: 'Enceinte Bluetooth', categorie: 'Multimédia', prix: 90, poids: 1.0, stock_minimum: 35})")
+            conn.execute_query("CREATE (p9:Produit {id: 'P009', nom: 'Webcam HD', categorie: 'Multimédia', prix: 75, poids: 0.4, stock_minimum: 50})")
+            
+            # Catégorie Livre
+            conn.execute_query("CREATE (p10:Produit {id: 'P010', nom: 'Livre \"Neo4j Guide\"', categorie: 'Livre', prix: 30, poids: 0.5, stock_minimum: 100})")
+            conn.execute_query("CREATE (p11:Produit {id: 'P011', nom: 'Manuel Python', categorie: 'Livre', prix: 45, poids: 0.8, stock_minimum: 80})")
+            conn.execute_query("CREATE (p12:Produit {id: 'P012', nom: 'Guide JavaScript', categorie: 'Livre', prix: 35, poids: 0.6, stock_minimum: 90})")
+            
+            # Catégorie Accessoires
+            conn.execute_query("CREATE (p13:Produit {id: 'P013', nom: 'Souris sans fil', categorie: 'Accessoires', prix: 25, poids: 0.1, stock_minimum: 60})")
+            conn.execute_query("CREATE (p14:Produit {id: 'P014', nom: 'Clavier mécanique', categorie: 'Accessoires', prix: 120, poids: 1.1, stock_minimum: 25})")
+            conn.execute_query("CREATE (p15:Produit {id: 'P015', nom: 'Support ordinateur', categorie: 'Accessoires', prix: 60, poids: 2.0, stock_minimum: 20})")
+
+            # Création des zones (8 zones géographiques)
+            conn.execute_query("CREATE (z1:Zone {id: 'Z001', nom: 'Centre Ville', densite_population: 'Élevée', code_postal: '75001'})")
+            conn.execute_query("CREATE (z2:Zone {id: 'Z002', nom: 'Banlieue Ouest', densite_population: 'Moyenne', code_postal: '92000'})")
+            conn.execute_query("CREATE (z3:Zone {id: 'Z003', nom: 'Zone Industrielle', densite_population: 'Faible', code_postal: '93000'})")
+            conn.execute_query("CREATE (z4:Zone {id: 'Z004', nom: 'Quartier Résidentiel', densite_population: 'Moyenne', code_postal: '94000'})")
+            conn.execute_query("CREATE (z5:Zone {id: 'Z005', nom: 'Banlieue Est', densite_population: 'Élevée', code_postal: '77000'})")
+            conn.execute_query("CREATE (z6:Zone {id: 'Z006', nom: 'Quartier Nord', densite_population: 'Moyenne', code_postal: '95000'})")
+            conn.execute_query("CREATE (z7:Zone {id: 'Z007', nom: 'Périphérie Sud', densite_population: 'Faible', code_postal: '91000'})")
+            conn.execute_query("CREATE (z8:Zone {id: 'Z008', nom: 'Zone Commerciale', densite_population: 'Élevée', code_postal: '78000'})")
+
+            # Création des relations LOCATED_IN (clients dans les zones)
+            conn.execute_query("MATCH (c1:Client {id: 'C001'}), (z1:Zone {id: 'Z001'}) CREATE (c1)-[:LOCATED_IN]->(z1)")
+            conn.execute_query("MATCH (c2:Client {id: 'C002'}), (z2:Zone {id: 'Z002'}) CREATE (c2)-[:LOCATED_IN]->(z2)")
+            conn.execute_query("MATCH (c3:Client {id: 'C003'}), (z3:Zone {id: 'Z003'}) CREATE (c3)-[:LOCATED_IN]->(z3)")
+            conn.execute_query("MATCH (c4:Client {id: 'C004'}), (z4:Zone {id: 'Z004'}) CREATE (c4)-[:LOCATED_IN]->(z4)")
+            conn.execute_query("MATCH (c5:Client {id: 'C005'}), (z5:Zone {id: 'Z005'}) CREATE (c5)-[:LOCATED_IN]->(z5)")
+            conn.execute_query("MATCH (c6:Client {id: 'C006'}), (z6:Zone {id: 'Z006'}) CREATE (c6)-[:LOCATED_IN]->(z6)")
+            conn.execute_query("MATCH (c7:Client {id: 'C007'}), (z7:Zone {id: 'Z007'}) CREATE (c7)-[:LOCATED_IN]->(z7)")
+            conn.execute_query("MATCH (c8:Client {id: 'C008'}), (z8:Zone {id: 'Z008'}) CREATE (c8)-[:LOCATED_IN]->(z8)")
+            conn.execute_query("MATCH (c9:Client {id: 'C009'}), (z1:Zone {id: 'Z001'}) CREATE (c9)-[:LOCATED_IN]->(z1)")
+            conn.execute_query("MATCH (c10:Client {id: 'C010'}), (z2:Zone {id: 'Z002'}) CREATE (c10)-[:LOCATED_IN]->(z2)")
+
+            # Création des relations ASSIGNED_TO (livreurs assignés aux zones)
+            conn.execute_query("MATCH (l1:Livreur {id: 'L001'}), (z1:Zone {id: 'Z001'}) CREATE (l1)-[:ASSIGNED_TO]->(z1)")
+            conn.execute_query("MATCH (l2:Livreur {id: 'L002'}), (z2:Zone {id: 'Z002'}) CREATE (l2)-[:ASSIGNED_TO]->(z2)")
+            conn.execute_query("MATCH (l3:Livreur {id: 'L003'}), (z1:Zone {id: 'Z001'}) CREATE (l3)-[:ASSIGNED_TO]->(z1)")
+            conn.execute_query("MATCH (l4:Livreur {id: 'L004'}), (z3:Zone {id: 'Z003'}) CREATE (l4)-[:ASSIGNED_TO]->(z3)")
+            conn.execute_query("MATCH (l5:Livreur {id: 'L005'}), (z7:Zone {id: 'Z007'}) CREATE (l5)-[:ASSIGNED_TO]->(z7)")
+            conn.execute_query("MATCH (l6:Livreur {id: 'L006'}), (z4:Zone {id: 'Z004'}) CREATE (l6)-[:ASSIGNED_TO]->(z4)")
+
+            # Création des relations STOCKED_IN (produits dans les entrepôts)
+            stock_relations = [
+                ('P001', 'E001', 50), ('P002', 'E001', 75), ('P003', 'E001', 60),
+                ('P004', 'E003', 100), ('P005', 'E003', 85), ('P006', 'E003', 40),
+                ('P007', 'E004', 120), ('P008', 'E004', 95), ('P009', 'E004', 80),
+                ('P010', 'E005', 200), ('P011', 'E005', 150), ('P012', 'E005', 180),
+                ('P013', 'E002', 200), ('P014', 'E002', 60), ('P015', 'E002', 45)
+            ]
+            
+            for produit_id, entrepot_id, quantite in stock_relations:
+                conn.execute_query(f"MATCH (p:Produit {{id: '{produit_id}'}}), (e:Entrepôt {{id: '{entrepot_id}'}}) CREATE (p)-[:STOCKED_IN {{quantite: {quantite}}}]->(e)")
+
+            # Fonction pour créer des commandes
+            def create_commande(cmd_id, client_id, livreur_id, produits, date_cmd, statut, prix_total, poids_total):
+                conn.execute_query(f"""
+                MATCH (c:Client {{id: '{client_id}'}}), (l:Livreur {{id: '{livreur_id}'}})
+                CREATE (cmd:Commande {{
+                    id: '{cmd_id}', 
+                    date_commande: date('{date_cmd}'), 
+                    prix_total: {prix_total}, 
+                    poids_total: {poids_total}, 
+                    statut: '{statut}'
+                }})
+                CREATE (c)-[:ORDERED]->(cmd)
+                CREATE (l)-[:DELIVERS]->(cmd)
+                """)
+                
+                for produit_id, quantite in produits:
+                    conn.execute_query(f"""
+                    MATCH (cmd:Commande {{id: '{cmd_id}'}}), (p:Produit {{id: '{produit_id}'}})
+                    CREATE (cmd)-[:CONTAINS {{quantite: {quantite}}}]->(p)
+                    """)
+
+            # Création des 32 commandes avec différents statuts
+            commandes = [
+                ('CMD001', 'C001', 'L001', [('P001', 1), ('P010', 1)], '2023-01-15', 'Livré', 1230, 3.0),
+                ('CMD002', 'C002', 'L002', [('P004', 2)], '2023-01-16', 'En cours', 160, 2.4),
+                ('CMD003', 'C003', 'L004', [('P002', 1), ('P007', 1)], '2023-01-17', 'Livré', 950, 0.5),
+                ('CMD004', 'C004', 'L001', [('P003', 3)], '2023-01-18', 'En attente', 1350, 2.1),
+                ('CMD005', 'C005', 'L003', [('P013', 2), ('P010', 1)], '2023-01-19', 'Livré', 80, 0.7),
+                ('CMD006', 'C006', 'L005', [('P006', 1), ('P005', 1)], '2023-01-20', 'Expédié', 265, 6.3),
+                ('CMD007', 'C007', 'L006', [('P008', 1)], '2023-01-21', 'Livré', 90, 1.0),
+                ('CMD008', 'C008', 'L002', [('P001', 2), ('P014', 1)], '2023-01-22', 'En cours', 2520, 6.1),
+                ('CMD009', 'C009', 'L001', [('P009', 1), ('P011', 1)], '2023-01-23', 'Livré', 120, 1.2),
+                ('CMD010', 'C010', 'L004', [('P012', 2)], '2023-01-24', 'En attente', 70, 1.2),
+                ('CMD011', 'C001', 'L003', [('P015', 1)], '2023-01-25', 'Expédié', 60, 2.0),
+                ('CMD012', 'C002', 'L005', [('P004', 1), ('P005', 1)], '2023-01-26', 'Livré', 125, 3.0),
+                ('CMD013', 'C003', 'L006', [('P002', 1)], '2023-01-27', 'En cours', 800, 0.3),
+                ('CMD014', 'C004', 'L001', [('P007', 2), ('P013', 1)], '2023-01-28', 'Livré', 325, 0.5),
+                ('CMD015', 'C005', 'L002', [('P001', 1)], '2023-01-29', 'En attente', 1200, 2.5),
+                ('CMD016', 'C006', 'L004', [('P003', 1), ('P008', 1)], '2023-01-30', 'Expédié', 540, 1.7),
+                ('CMD017', 'C007', 'L003', [('P010', 3)], '2023-02-01', 'Livré', 90, 1.5),
+                ('CMD018', 'C008', 'L005', [('P006', 1)], '2023-02-02', 'En cours', 220, 4.5),
+                ('CMD019', 'C009', 'L006', [('P009', 2), ('P011', 1)], '2023-02-03', 'Livré', 195, 1.6),
+                ('CMD020', 'C010', 'L001', [('P012', 1), ('P014', 1)], '2023-02-04', 'En attente', 155, 1.7),
+                ('CMD021', 'C001', 'L002', [('P015', 1), ('P013', 2)], '2023-02-05', 'Expédié', 110, 2.2),
+                ('CMD022', 'C002', 'L004', [('P004', 3)], '2023-02-06', 'Livré', 240, 3.6),
+                ('CMD023', 'C003', 'L003', [('P002', 1), ('P007', 1)], '2023-02-07', 'En cours', 950, 0.5),
+                ('CMD024', 'C004', 'L005', [('P001', 1), ('P008', 1)], '2023-02-08', 'Livré', 1290, 3.5),
+                ('CMD025', 'C005', 'L006', [('P005', 2)], '2023-02-09', 'En attente', 90, 3.6),
+                ('CMD026', 'C006', 'L001', [('P006', 1), ('P009', 1)], '2023-02-10', 'Expédié', 295, 4.9),
+                ('CMD027', 'C007', 'L002', [('P010', 1), ('P011', 1)], '2023-02-11', 'Livré', 75, 1.3),
+                ('CMD028', 'C008', 'L004', [('P003', 2)], '2023-02-12', 'En cours', 900, 1.4),
+                ('CMD029', 'C009', 'L003', [('P012', 1), ('P013', 1)], '2023-02-13', 'Livré', 60, 0.7),
+                ('CMD030', 'C010', 'L005', [('P014', 1)], '2023-02-14', 'En attente', 120, 1.1),
+                ('CMD031', 'C001', 'L006', [('P015', 1), ('P007', 1)], '2023-02-15', 'Expédié', 210, 2.2),
+                ('CMD032', 'C002', 'L001', [('P001', 1), ('P004', 1)], '2023-02-16', 'Livré', 1280, 3.7)
+            ]
+            
+            for cmd_data in commandes:
+                create_commande(*cmd_data)
+
+            # Création des trajets
+            trajets = [
+                ('TRJ001', 'E001', 'Z001', 15, 30, 150),
+                ('TRJ002', 'E002', 'Z002', 25, 45, 200),
+                ('TRJ003', 'E001', 'Z004', 20, 40, 180),
+                ('TRJ004', 'E003', 'Z003', 10, 20, 90),
+                ('TRJ005', 'E004', 'Z001', 18, 35, 160),
+                ('TRJ006', 'E005', 'Z005', 22, 42, 190),
+                ('TRJ007', 'E002', 'Z006', 28, 50, 220),
+                ('TRJ008', 'E003', 'Z007', 35, 60, 280),
+                ('TRJ009', 'E004', 'Z008', 12, 25, 120),
+                ('TRJ010', 'E001', 'Z005', 30, 55, 250)
+            ]
+            
+            for trajet_id, entrepot_id, zone_id, distance, duree, cout in trajets:
+                conn.execute_query(f"MATCH (e:Entrepôt {{id: '{entrepot_id}'}}), (z:Zone {{id: '{zone_id}'}}) CREATE (t:Trajet {{id: '{trajet_id}', origine: '{entrepot_id}', distance: {distance}, duree: {duree}, cout: {cout}}})-[:PASSED_BY]->(z)")
+
+            st.success("Données de test étendues générées avec succès. Actualisation de la page...")
+            st.cache_resource.clear()
+            st.rerun()
+
+        except Exception as e:
+            st.error(f"Erreur lors de la génération des données de test : {str(e)}")
+# Note: La fermeture de la connexion Neo4j est gérée par st.cache_resource.
+# Elle sera fermée automatiquement lorsque l'application Streamlit s'arrêtera.
+
+    if st.button("Générer des Données de Test 2"):
         try:
             # Suppression des données existantes
             conn.execute_query("MATCH (n) DETACH DELETE n")
@@ -1165,12 +1594,10 @@ elif selected == "Administration":
 
             st.success("Données de test générées avec succès. Actualisation de la page...")
             st.cache_resource.clear()
-            st.experimental_rerun()
+            st.rerun()
 
         except Exception as e:
             st.error(f"Erreur lors de la génération des données de test : {str(e)}")
 
 
 
-# Note: La fermeture de la connexion Neo4j est gérée par st.cache_resource.
-# Elle sera fermée automatiquement lorsque l'application Streamlit s'arrêtera.

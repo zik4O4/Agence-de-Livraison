@@ -5,3 +5,4 @@ neo4j
 networkx
 matplotlib
 numpy
+streamlit-option-menu
